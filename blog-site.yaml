@@ -1,0 +1,9 @@
+apiVersion: demo.io/v1
+kind: StaticSite
+metadata:
+  name: dynamic-go-blog
+spec:
+  replicas: 2
+  content: |
+    <h1>Hello from Go Automation!</h1>
+    
