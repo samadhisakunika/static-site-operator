@@ -5,6 +5,7 @@ import (
 
 	appv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -26,6 +27,7 @@ type StaticSiteReconciler struct {
 //+kubebuilder:rbac:groups=demo.io,resources=staticsites/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile function - the main logic of the controller
 // function trigger whenever the use create edit, delete the YAML file
@@ -164,6 +166,64 @@ func (r *StaticSiteReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			return ctrl.Result{}, err
 		}
 	}
+
+	// 8. Define the desired Ingress (if domain is specified)
+	if staticSite.Spec.Domain == "" {
+		l.Info("Skipped Ingress creation because domain was empty", "name", staticSite.Name)
+		return ctrl.Result{}, nil
+	}
+
+	// Define the desired Ingress - automating the ingress creation
+	ingressClassName := "nginx"
+	pathType := networkingv1.PathTypePrefix
+	desiredIngress := &networkingv1.Ingress{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      staticSite.Name + "-ingress",
+			Namespace: staticSite.Namespace,
+			Annotations: map[string]string{
+				"nginx.ingress.kubernetes.io/ssl-redirect": "false",
+			},
+		},
+		Spec: networkingv1.IngressSpec{
+			IngressClassName: &ingressClassName,
+			Rules: []networkingv1.IngressRule{{
+				Host: staticSite.Spec.Domain,
+				IngressRuleValue: networkingv1.IngressRuleValue{
+					HTTP: &networkingv1.HTTPIngressRuleValue{
+						Paths: []networkingv1.HTTPIngressPath{{
+							Path:     "/",
+							PathType: &pathType,
+							Backend: networkingv1.IngressBackend{
+								Service: &networkingv1.IngressServiceBackend{
+									Name: desiredService.Name,
+									Port: networkingv1.ServiceBackendPort{Number: 80},
+								},
+							},
+						}},
+					},
+				},
+			}},
+		},
+	}
+
+	if err := ctrl.SetControllerReference(&staticSite, desiredIngress, r.Scheme); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	var existingIngress networkingv1.Ingress
+	err = r.Get(ctx, client.ObjectKey{Name: desiredIngress.Name, Namespace: desiredIngress.Namespace}, &existingIngress)
+	if err != nil && errors.IsNotFound(err) {
+		l.Info("Creating a new Ingress", "Namespace", desiredIngress.Namespace, "Name", desiredIngress.Name, "Host", staticSite.Spec.Domain)
+		if err := r.Create(ctx, desiredIngress); err != nil {
+			return ctrl.Result{}, err
+		}
+	} else if err == nil {
+		existingIngress.Annotations = desiredIngress.Annotations
+		existingIngress.Spec = desiredIngress.Spec
+		if err := r.Update(ctx, &existingIngress); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 	return ctrl.Result{}, nil
 }
 
@@ -171,9 +231,10 @@ func (r *StaticSiteReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 // setupWithManager tells the controller manager to watch our Custom Resource type
 func (r *StaticSiteReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&demov1.StaticSite{}). // instruct the manager to run the reconcile function whenever a StaticSite object is added or modified
-		Owns(&appv1.Deployment{}). // instruct the manager to run the reconcile function whenever a Deployment object owned by a StaticSite is added or modified (healing mechanism)
-		Owns(&corev1.ConfigMap{}). // instruct the manager to run the reconcile function whenever a ConfigMap object owned by a StaticSite is added or modified (healing mechanism)
-		Owns(&corev1.Service{}).   // instruct the manager to run the reconcile function whenever a Service object owned by a StaticSite is added or modified (healing mechanism)
+		For(&demov1.StaticSite{}).     // instruct the manager to run the reconcile function whenever a StaticSite object is added or modified
+		Owns(&appv1.Deployment{}).     // instruct the manager to run the reconcile function whenever a Deployment object owned by a StaticSite is added or modified (healing mechanism)
+		Owns(&corev1.ConfigMap{}).     // instruct the manager to run the reconcile function whenever a ConfigMap object owned by a StaticSite is added or modified (healing mechanism)
+		Owns(&corev1.Service{}).       // instruct the manager to run the reconcile function whenever a Service object owned by a StaticSite is added or modified (healing mechanism)
+		Owns(&networkingv1.Ingress{}). // instruct the manager to run the reconcile function whenever an Ingress object owned by a StaticSite is added or modified (healing mechanism)
 		Complete(r)
 }

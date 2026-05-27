@@ -7,7 +7,7 @@ metadata:
     nginx.ingress.kubernetes.io/ssl-redirect: "false"
 spec:
   rules:
-  - host: staticsite.local  # <--- THIS IS YOUR NEW URL!
+  - host: staticsite.local  
     http:
       paths:
       - path: /
